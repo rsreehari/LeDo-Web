@@ -1,3 +1,4 @@
+/* global __app_id, __firebase_config, __initial_auth_token */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -5,7 +6,7 @@ import {
   signOut 
 } from 'firebase/auth';
 import { 
-  getFirestore, doc, collection, onSnapshot, setDoc, addDoc, 
+  getFirestore, doc, collection, onSnapshot, addDoc, 
   query, where, serverTimestamp, updateDoc, deleteDoc, getDocs, 
   setLogLevel 
 } from 'firebase/firestore';
@@ -46,14 +47,7 @@ const formatTimestamp = (timestamp, includeTime = false) => {
   return date.toLocaleDateString('en-US', options);
 };
 
-// Simple debounce function for input
-const debounce = (func, delay) => {
-  let timeoutId;
-  return (...args) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => func.apply(this, args), delay);
-  };
-};
+// (removed unused debounce)
 
 // --- Firebase Initialization & Authentication ---
 
@@ -333,7 +327,7 @@ const Sidebar = ({
     </div>
   );
 
-  const NavItem = ({ label, icon: Icon, targetView }) => (
+  const NavItem = ({ label, icon, targetView }) => (
     <div
       onClick={() => setView(targetView)}
       className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors rounded-md ${
@@ -342,7 +336,7 @@ const Sidebar = ({
           : 'text-indigo-200 hover:bg-indigo-700 hover:text-white'
       }`}
     >
-      <Icon size={16} />
+      {icon}
       {label}
     </div>
   );
@@ -352,10 +346,10 @@ const Sidebar = ({
       <h1 className="text-2xl font-extrabold mb-8 text-center tracking-wider border-b border-indigo-700 pb-3">LeDo</h1>
       
       <div className="space-y-2 mb-8">
-        <NavItem label="Today's Things" icon={Clock} targetView="tasks" />
-        <NavItem label="AI Strategist Chat" icon={MessageSquare} targetView="chat" />
-        <NavItem label="History Log" icon={BarChart2} targetView="history" />
-        <NavItem label="Settings" icon={Settings} targetView="settings" />
+        <NavItem label="Today's Things" icon={<Clock size={16} />} targetView="tasks" />
+        <NavItem label="AI Strategist Chat" icon={<MessageSquare size={16} />} targetView="chat" />
+        <NavItem label="History Log" icon={<BarChart2 size={16} />} targetView="history" />
+        <NavItem label="Settings" icon={<Settings size={16} />} targetView="settings" />
       </div>
 
       <div className="flex-grow overflow-y-auto space-y-2">
@@ -706,12 +700,12 @@ const HistoryView = ({ tasks }) => {
           <div key={date} className="mb-8">
             <h3 className="text-xl font-bold text-indigo-700 mb-4 border-b pb-2">{date}</h3>
             <div className="space-y-3">
-              {tasks.map(task => (
-                <div key={task.id} className="bg-white p-4 rounded-lg shadow-md flex justify-between items-center border-l-4 border-green-500">
+      {tasks.map(task => (
+          <div key={task.id} className="bg-white p-4 rounded-lg shadow-md flex justify-between items-center border-l-4 border-green-500">
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-gray-800 truncate">{task.name}</p>
                     <p className="text-sm text-gray-500">
-                      Completed by {task.assignee} in {tasks.find(c => c.id === task.communityId)?.name || 'Unknown Community'}
+                      Completed by {task.assignee}
                     </p>
                   </div>
                   <div className="text-sm text-green-600 font-bold flex items-center ml-4">
@@ -804,7 +798,7 @@ const ChatView = ({ db, userId, communities, tasks, chatHistory }) => {
       // Save model response
       await saveMessage('model', modelResponse, sources);
 
-    } catch (error) {
+    } catch {
       await saveMessage('model', 'An error occurred while connecting to the AI Strategist. Please check your connection and try again.');
     } finally {
       setIsTyping(false);
@@ -889,7 +883,7 @@ const ChatView = ({ db, userId, communities, tasks, chatHistory }) => {
 
 // --- Component: Settings View ---
 
-const SettingsView = ({ db, userId, communities, tasks, setCommunities }) => {
+const SettingsView = ({ db, userId, communities }) => {
   const [newCommunityName, setNewCommunityName] = useState('');
   const [newMemberName, setNewMemberName] = useState('');
   const [communityToEdit, setCommunityToEdit] = useState(null);
@@ -1256,7 +1250,7 @@ const App = () => {
       case 'history':
         return <HistoryView tasks={tasks} />;
       case 'settings':
-        return <SettingsView db={db} userId={userId} communities={communities} setCommunities={setSelectedCommunityId} />;
+        return <SettingsView db={db} userId={userId} communities={communities} />;
       default:
         return <div className="p-8">Select an option from the sidebar.</div>;
     }
