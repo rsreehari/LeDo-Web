@@ -1,0 +1,20 @@
+/*
+Tailwind CSS Directives: These are necessary for Vite/PostCSS to build the utility classes used in LeDoApp.jsx.
+*/
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom body styling for a clean page background */
+body {
+    margin: 0;
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: #f7f7f9;
+}
+
+/* Ensure the root element takes full height */
+#root {
+    min-height: 100vh;
+}
