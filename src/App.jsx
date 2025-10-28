@@ -36,15 +36,53 @@ const getStatusColor = (status) => {
   }
 };
 
-/** Converts a Firebase Timestamp to a readable date string (or Date object) */
+/** Utilities to normalize Firestore and demo timestamps */
+const toDateIfPossible = (value) => {
+  if (!value) return null;
+  if (typeof value?.toDate === 'function') return value.toDate();
+  if (typeof value?.toMillis === 'function') return new Date(value.toMillis());
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') return new Date(value);
+  return null;
+};
+
+const toMillis = (value) => {
+  if (!value) return 0;
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  const d = toDateIfPossible(value);
+  return d ? d.getTime() : 0;
+};
+
+/** Converts a Timestamp-like value to a readable date string */
 const formatTimestamp = (timestamp, includeTime = false) => {
-  if (!timestamp || !timestamp.toDate) return 'N/A';
-  const date = timestamp.toDate();
+  const date = toDateIfPossible(timestamp);
+  if (!date) return 'N/A';
   const options = { 
     month: 'short', day: 'numeric', year: 'numeric',
     ...(includeTime && { hour: '2-digit', minute: '2-digit' })
   };
   return date.toLocaleDateString('en-US', options);
+};
+
+// --- Demo mode storage helpers ---
+const getDemoKey = (collectionName, userId = null) => {
+  const base = `demo:${appId}`;
+  if (collectionName === 'chat_history') return `${base}:chat:${userId || 'anon'}`;
+  return `${base}:${collectionName}`;
+};
+
+const readDemoData = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const writeDemoData = (key, data) => {
+  localStorage.setItem(key, JSON.stringify(data));
+  window.dispatchEvent(new CustomEvent('demo-data-changed', { detail: { key } }));
 };
 
 // (removed unused debounce)
@@ -59,7 +97,20 @@ const useFirebase = () => {
 
   useEffect(() => {
     if (Object.keys(firebaseConfig).length === 0) {
-      console.error("Firebase config is missing. Cannot initialize Firestore.");
+      console.warn("Firebase config is missing. Entering local demo mode.");
+      // Seed demo storage on first run
+      const communitiesKey = getDemoKey('communities');
+      const tasksKey = getDemoKey('tasks');
+      if (!localStorage.getItem(communitiesKey)) {
+        writeDemoData(communitiesKey, [
+          { id: 'demo-community', name: 'Demo Community', members: [ { name: 'Self', role: 'Lead', id: 'self' } ], createdAt: Date.now() }
+        ]);
+      }
+      if (!localStorage.getItem(tasksKey)) {
+        writeDemoData(tasksKey, []);
+      }
+      setUserId(crypto.randomUUID());
+      setIsAuthReady(true);
       return;
     }
 
@@ -126,6 +177,16 @@ const usePublicCollection = (db, isReady, collectionName) => {
   const collectionPath = `/artifacts/${appId}/public/data/${collectionName}`;
 
   useEffect(() => {
+    // Demo mode: no db but ready
+    if (!db && isReady && Object.keys(firebaseConfig).length === 0) {
+      const key = getDemoKey(collectionName);
+      const update = () => setData(readDemoData(key, []));
+      update();
+      const handler = (e) => { if (e.detail?.key === key) update(); };
+      window.addEventListener('demo-data-changed', handler);
+      return () => window.removeEventListener('demo-data-changed', handler);
+    }
+
     if (!db || !isReady) return;
 
     try {
@@ -155,6 +216,19 @@ const usePrivateChatHistory = (db, isReady, userId) => {
   const collectionPath = `/artifacts/${appId}/users/${userId}/chat_history`;
 
   useEffect(() => {
+    // Demo mode
+    if (!db && isReady && userId && Object.keys(firebaseConfig).length === 0) {
+      const key = getDemoKey('chat_history', userId);
+      const update = () => {
+        const items = readDemoData(key, []);
+        setHistory(items.sort((a, b) => toMillis(a.timestamp) - toMillis(b.timestamp)));
+      };
+      update();
+      const handler = (e) => { if (e.detail?.key === key) update(); };
+      window.addEventListener('demo-data-changed', handler);
+      return () => window.removeEventListener('demo-data-changed', handler);
+    }
+
     if (!db || !isReady || !userId) return setHistory([]);
 
     try {
@@ -391,7 +465,7 @@ const TaskFormModal = ({ db, currentCommunity, taskToEdit, onClose }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!db || !currentCommunity.id || !taskName.trim()) return;
+    if (!currentCommunity.id || !taskName.trim()) return;
 
     setIsLoading(true);
 
@@ -408,15 +482,29 @@ const TaskFormModal = ({ db, currentCommunity, taskToEdit, onClose }) => {
     };
 
     try {
-      if (isEditing) {
-        // Update existing task
-        await updateDoc(doc(db, `/artifacts/${appId}/public/data/tasks`, taskToEdit.id), taskData);
-      } else {
-        // Add new task
-        await addDoc(collection(db, `/artifacts/${appId}/public/data/tasks`), {
-          ...taskData,
-          createdAt: serverTimestamp(),
-        });
+      if (Object.keys(firebaseConfig).length === 0) {
+        // Demo mode writes to localStorage
+        const key = getDemoKey('tasks');
+        const existing = readDemoData(key, []);
+        if (isEditing) {
+          const next = existing.map(t => t.id === taskToEdit.id ? { ...t, ...taskData } : t);
+          writeDemoData(key, next);
+        } else {
+          const id = crypto.randomUUID();
+          writeDemoData(key, [
+            ...existing,
+            { id, ...taskData, createdAt: Date.now() }
+          ]);
+        }
+      } else if (db) {
+        if (isEditing) {
+          await updateDoc(doc(db, `/artifacts/${appId}/public/data/tasks`, taskToEdit.id), taskData);
+        } else {
+          await addDoc(collection(db, `/artifacts/${appId}/public/data/tasks`), {
+            ...taskData,
+            createdAt: serverTimestamp(),
+          });
+        }
       }
       onClose();
     } catch (error) {
@@ -530,13 +618,18 @@ const TasksView = ({ db, community, tasks, openTaskModal }) => {
   const [taskToDelete, setTaskToDelete] = useState(null);
 
   const deleteTask = useCallback(async (taskId) => {
-    if (!db || !taskId) return;
+    if (!taskId) return;
     try {
-      await deleteDoc(doc(db, `/artifacts/${appId}/public/data/tasks`, taskId));
+      if (Object.keys(firebaseConfig).length === 0) {
+        const key = getDemoKey('tasks');
+        const existing = readDemoData(key, []);
+        writeDemoData(key, existing.filter(t => t.id !== taskId));
+      } else if (db) {
+        await deleteDoc(doc(db, `/artifacts/${appId}/public/data/tasks`, taskId));
+      }
       console.log(`Task ${taskId} deleted.`);
     } catch (error) {
       console.error("Error deleting task:", error);
-      // Replaced alert with console error as per guidelines
     } finally {
       setShowDeleteModal(false);
       setTaskToDelete(null);
@@ -549,14 +642,25 @@ const TasksView = ({ db, community, tasks, openTaskModal }) => {
   }
 
   const handleStatusChange = async (task, newStatus) => {
-    if (!db) return;
     try {
-      await updateDoc(doc(db, `/artifacts/${appId}/public/data/tasks`, task.id), {
-        status: newStatus,
-        isCompleted: newStatus === 'Done',
-        ...(newStatus === 'Done' && { completedAt: serverTimestamp() }),
-        ...(newStatus !== 'Done' && { completedAt: null }),
-      });
+      if (Object.keys(firebaseConfig).length === 0) {
+        const key = getDemoKey('tasks');
+        const existing = readDemoData(key, []);
+        const next = existing.map(t => t.id === task.id ? {
+          ...t,
+          status: newStatus,
+          isCompleted: newStatus === 'Done',
+          completedAt: newStatus === 'Done' ? Date.now() : null,
+        } : t);
+        writeDemoData(key, next);
+      } else if (db) {
+        await updateDoc(doc(db, `/artifacts/${appId}/public/data/tasks`, task.id), {
+          status: newStatus,
+          isCompleted: newStatus === 'Done',
+          ...(newStatus === 'Done' && { completedAt: serverTimestamp() }),
+          ...(newStatus !== 'Done' && { completedAt: null }),
+        });
+      }
     } catch (error) {
       console.error("Error updating status:", error);
     }
@@ -891,7 +995,7 @@ const SettingsView = ({ db, userId, communities }) => {
 
   const addCommunity = async (e) => {
     e.preventDefault();
-    if (!db || !newCommunityName.trim()) return;
+    if (!newCommunityName.trim()) return;
     setIsLoading(true);
 
     const defaultMembers = [
@@ -900,12 +1004,22 @@ const SettingsView = ({ db, userId, communities }) => {
     ];
 
     try {
-      await addDoc(collection(db, `/artifacts/${appId}/public/data/communities`), {
-        name: newCommunityName.trim(),
-        ownerId: userId,
-        members: defaultMembers,
-        createdAt: serverTimestamp(),
-      });
+      if (Object.keys(firebaseConfig).length === 0) {
+        const key = getDemoKey('communities');
+        const existing = readDemoData(key, []);
+        const id = crypto.randomUUID();
+        writeDemoData(key, [
+          ...existing,
+          { id, name: newCommunityName.trim(), ownerId: userId, members: defaultMembers, createdAt: Date.now() }
+        ]);
+      } else if (db) {
+        await addDoc(collection(db, `/artifacts/${appId}/public/data/communities`), {
+          name: newCommunityName.trim(),
+          ownerId: userId,
+          members: defaultMembers,
+          createdAt: serverTimestamp(),
+        });
+      }
       setNewCommunityName('');
     } catch (error) {
       console.error("Error creating community:", error);
@@ -917,15 +1031,22 @@ const SettingsView = ({ db, userId, communities }) => {
   
   const updateCommunityMembers = async (e) => {
     e.preventDefault();
-    if (!db || !communityToEdit) return;
+    if (!communityToEdit) return;
     setIsLoading(true);
 
     try {
-      await updateDoc(doc(db, `/artifacts/${appId}/public/data/communities`, communityToEdit.id), {
-        members: communityToEdit.members,
-        updatedAt: serverTimestamp(),
-      });
-      setCommunityToEdit(null); // Close modal
+      if (Object.keys(firebaseConfig).length === 0) {
+        const key = getDemoKey('communities');
+        const existing = readDemoData(key, []);
+        const next = existing.map(c => c.id === communityToEdit.id ? { ...c, members: communityToEdit.members, updatedAt: Date.now() } : c);
+        writeDemoData(key, next);
+      } else if (db) {
+        await updateDoc(doc(db, `/artifacts/${appId}/public/data/communities`, communityToEdit.id), {
+          members: communityToEdit.members,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      setCommunityToEdit(null);
     } catch (error) {
       console.error("Error updating members:", error);
       // Replaced alert with console error as per guidelines
@@ -938,20 +1059,27 @@ const SettingsView = ({ db, userId, communities }) => {
     if (!db || !communityId || !window.confirm("WARNING: Are you absolutely sure you want to delete this community and ALL its associated tasks?")) return;
 
     try {
-      // 1. Delete all associated tasks (Admin-level operation)
-      const tasksQuery = query(
-        collection(db, `/artifacts/${appId}/public/data/tasks`),
-        where('communityId', '==', communityId)
-      );
-      const taskDocs = await getDocs(tasksQuery);
-      const deletePromises = taskDocs.docs.map(d => deleteDoc(d.ref));
-      await Promise.all(deletePromises);
-
-      // 2. Delete the community document
-      await deleteDoc(doc(db, `/artifacts/${appId}/public/data/communities`, communityId));
+      if (Object.keys(firebaseConfig).length === 0) {
+        const tasksKey = getDemoKey('tasks');
+        const communitiesKey = getDemoKey('communities');
+        const tasksExisting = readDemoData(tasksKey, []);
+        const communitiesExisting = readDemoData(communitiesKey, []);
+        const remainingTasks = tasksExisting.filter(t => t.communityId !== communityId);
+        writeDemoData(tasksKey, remainingTasks);
+        writeDemoData(communitiesKey, communitiesExisting.filter(c => c.id !== communityId));
+        console.log(`Community and ${tasksExisting.length - remainingTasks.length} tasks successfully deleted.`);
+      } else if (db) {
+        const tasksQuery = query(
+          collection(db, `/artifacts/${appId}/public/data/tasks`),
+          where('communityId', '==', communityId)
+        );
+        const taskDocs = await getDocs(tasksQuery);
+        const deletePromises = taskDocs.docs.map(d => deleteDoc(d.ref));
+        await Promise.all(deletePromises);
+        await deleteDoc(doc(db, `/artifacts/${appId}/public/data/communities`, communityId));
+        console.log(`Community and ${taskDocs.docs.length} tasks successfully deleted.`);
+      }
       
-      // Replaced alert with console log as per guidelines
-      console.log(`Community and ${taskDocs.docs.length} tasks successfully deleted.`);
     } catch (error) {
       console.error("Error deleting community and tasks:", error);
       // Replaced alert with console error as per guidelines
